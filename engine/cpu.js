@@ -10,6 +10,7 @@ import {
   positionHash,
   rowOf,
 } from './shogi.js';
+import { findOpeningMove, strategyMoveBonus } from './opening-book.js';
 
 const VALUES = Object.freeze({
   P: 100,
@@ -232,37 +233,31 @@ function scoreRootMove(position, move, depth, player, context) {
   return minimax(child, depth - 1, -Infinity, Infinity, player, context, 1);
 }
 
-function weightedRandom(scored, spread = 80) {
-  const best = scored[0]?.score ?? 0;
-  const candidates = scored.filter((entry) => entry.score >= best - spread);
-  return candidates[Math.floor(Math.random() * candidates.length)]?.move || scored[0]?.move || null;
-}
-
 function difficultyConfig(difficulty, options) {
   if (difficulty === 'easy') {
     return {
-      maxDepth: 1,
-      timeLimitMs: Math.max(options.timeLimitMs ?? 180, 170),
-      useQuiescence: false,
-      quiescenceDepth: 0,
-      randomSpread: 45,
+      maxDepth: options.maxDepth ?? 5,
+      timeLimitMs: options.timeLimitMs ?? 1200,
+      useQuiescence: true,
+      quiescenceDepth: options.quiescenceDepth ?? 4,
+      openingTolerance: 320,
     };
   }
   if (difficulty === 'hard') {
     return {
-      maxDepth: options.maxDepth ?? 5,
-      timeLimitMs: Math.max(options.timeLimitMs ?? 1200, 1200),
+      maxDepth: options.maxDepth ?? 7,
+      timeLimitMs: options.timeLimitMs ?? 3500,
       useQuiescence: true,
-      quiescenceDepth: options.quiescenceDepth ?? 4,
-      randomSpread: null,
+      quiescenceDepth: options.quiescenceDepth ?? 6,
+      openingTolerance: 100,
     };
   }
   return {
-    maxDepth: 3,
-    timeLimitMs: Math.max(options.timeLimitMs ?? 700, 520),
-    useQuiescence: false,
-    quiescenceDepth: 0,
-    randomSpread: null,
+    maxDepth: options.maxDepth ?? 6,
+    timeLimitMs: options.timeLimitMs ?? 2000,
+    useQuiescence: true,
+    quiescenceDepth: options.quiescenceDepth ?? 5,
+    openingTolerance: 180,
   };
 }
 
@@ -271,6 +266,8 @@ export async function chooseCpuMove(position, difficulty = 'normal', options = {
   if (legalMoves.length === 0) return null;
 
   const config = difficultyConfig(difficulty, options);
+  const strategy = options.strategy || null;
+  const opening = findOpeningMove(position, position.turn, strategy, legalMoves);
   const context = {
     deadline: now() + config.timeLimitMs,
     table: new Map(),
@@ -278,16 +275,25 @@ export async function chooseCpuMove(position, difficulty = 'normal', options = {
     quiescenceDepth: config.quiescenceDepth,
   };
 
-  let ordered = orderMoves(position, legalMoves);
-  let lastComplete = ordered.map((move) => ({ move, score: tacticalScore(position, move) }));
+  let ordered = orderMoves(position, legalMoves, opening ? moveKey(opening.move) : null);
+  let lastComplete = ordered.map((move) => ({
+    move,
+    score: tacticalScore(position, move),
+    adjustedScore: tacticalScore(position, move) + strategyMoveBonus(position, move, position.turn, strategy),
+  }));
 
   for (let depth = 1; depth <= config.maxDepth; depth += 1) {
     const current = [];
     try {
       for (const move of ordered) {
-        current.push({ move, score: scoreRootMove(position, move, depth, position.turn, context) });
+        const score = scoreRootMove(position, move, depth, position.turn, context);
+        current.push({
+          move,
+          score,
+          adjustedScore: score + strategyMoveBonus(position, move, position.turn, strategy),
+        });
       }
-      current.sort((a, b) => b.score - a.score);
+      current.sort((a, b) => b.adjustedScore - a.adjustedScore);
       lastComplete = current;
       ordered = current.map((entry) => entry.move);
     } catch (error) {
@@ -297,7 +303,14 @@ export async function chooseCpuMove(position, difficulty = 'normal', options = {
     await Promise.resolve();
   }
 
-  return config.randomSpread === null
-    ? lastComplete[0]?.move || ordered[0]
-    : weightedRandom(lastComplete, config.randomSpread);
+  const bestRawScore = Math.max(...lastComplete.map((entry) => entry.score));
+  if (opening) {
+    const openingKey = moveKey(opening.move);
+    const openingEntry = lastComplete.find((entry) => moveKey(entry.move) === openingKey);
+    if (openingEntry && openingEntry.score >= bestRawScore - config.openingTolerance) {
+      return openingEntry.move;
+    }
+  }
+
+  return lastComplete[0]?.move || ordered[0] || null;
 }

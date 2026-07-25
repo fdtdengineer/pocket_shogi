@@ -176,6 +176,22 @@
               <option value="hard">つよい</option>
             </select>
           </label>
+          <label>先手の戦法
+            <select id="blackCpuStrategy">
+              <option value="auto" selected>おまかせ</option>
+              <option value="yagura">矢倉</option>
+              <option value="mino">四間飛車・美濃</option>
+              <option value="bogin">棒銀</option>
+            </select>
+          </label>
+          <label>後手の戦法
+            <select id="whiteCpuStrategy">
+              <option value="auto" selected>おまかせ</option>
+              <option value="yagura">矢倉</option>
+              <option value="mino">四間飛車・美濃</option>
+              <option value="bogin">棒銀</option>
+            </select>
+          </label>
           <label>指し手の間隔
             <select id="cpuVsCpuSpeed">
               <option value="250">速い</option>
@@ -184,6 +200,7 @@
             </select>
           </label>
         </div>
+        <p class="small-note">定跡手が危険な場合は、自動的に通常探索へ切り替わります。</p>
         <button id="startCpuVsCpuButton" class="primary-button full-width" type="button">自動対局を開始</button>
       </div>
 

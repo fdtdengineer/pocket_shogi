@@ -15,10 +15,13 @@ import {
   serializePosition,
 } from './engine/shogi.js';
 import { chooseCpuMove } from './engine/cpu.js';
+import { AUTO_STRATEGY, resolveStrategy, strategyLabel } from './engine/opening-book.js';
 import { DqnClient } from './engine/dqn-client.js';
 import { OnlineSession, normalizeRoomCode } from './online.js';
 
 const DIFFICULTIES = new Set(['easy', 'normal', 'hard']);
+const STRATEGIES = new Set([AUTO_STRATEGY, 'yagura', 'mino', 'bogin']);
+const CPU_TIME_LIMITS = Object.freeze({ easy: 1200, normal: 2000, hard: 3500 });
 const storedDifficulty = localStorage.getItem('pocketShogiDifficulty');
 const initialDifficulty = DIFFICULTIES.has(storedDifficulty) ? storedDifficulty : 'normal';
 const storedSide = localStorage.getItem('pocketShogiSide') === 'white' ? WHITE : BLACK;
@@ -60,6 +63,8 @@ const elements = {
   startCpuVsCpuButton: document.querySelector('#startCpuVsCpuButton'),
   blackCpuDifficulty: document.querySelector('#blackCpuDifficulty'),
   whiteCpuDifficulty: document.querySelector('#whiteCpuDifficulty'),
+  blackCpuStrategy: document.querySelector('#blackCpuStrategy'),
+  whiteCpuStrategy: document.querySelector('#whiteCpuStrategy'),
   cpuVsCpuSpeed: document.querySelector('#cpuVsCpuSpeed'),
   onlineModeButton: document.querySelector('#onlineModeButton'),
   createRoomButton: document.querySelector('#createRoomButton'),
@@ -103,6 +108,18 @@ let cpuToken = 0;
 let online = null;
 let toastTimer = null;
 
+function randomCpuStrategies() {
+  return {
+    [BLACK]: resolveStrategy(AUTO_STRATEGY),
+    [WHITE]: resolveStrategy(AUTO_STRATEGY),
+  };
+}
+
+function selectedStrategy(element) {
+  const value = STRATEGIES.has(element?.value) ? element.value : AUTO_STRATEGY;
+  return resolveStrategy(value);
+}
+
 function createState(overrides = {}) {
   return {
     position: createInitialPosition(),
@@ -117,6 +134,7 @@ function createState(overrides = {}) {
     version: 0,
     cpuVsCpuPaused: false,
     cpuConfig: { [BLACK]: 'normal', [WHITE]: 'normal' },
+    cpuStrategy: randomCpuStrategies(),
     cpuDelay: 650,
     ...overrides,
   };
@@ -171,6 +189,7 @@ function resetPosition(overrides = {}) {
     onlineRole: state.onlineRole,
     connected: state.connected,
     cpuConfig: { ...state.cpuConfig },
+    cpuStrategy: { ...state.cpuStrategy },
     cpuDelay: state.cpuDelay,
     ...overrides,
   });
@@ -325,17 +344,19 @@ function renderLabels() {
   elements.moveCountText.textContent = `${state.position.moveNumber}手目`;
 
   if (state.mode === 'cpu') {
-    elements.blackLabel.textContent = state.humanPlayer === BLACK ? 'あなた・先手' : `CPU・先手`;
-    elements.whiteLabel.textContent = state.humanPlayer === WHITE ? 'あなた・後手' : `CPU・後手`;
-    elements.modeText.textContent = `CPU対戦・${state.humanPlayer === BLACK ? '先手' : '後手'}・${difficultyName(cpuDifficulty)}`;
+    const cpuPlayer = opponent(state.humanPlayer);
+    const cpuStrategyName = strategyLabel(state.cpuStrategy[cpuPlayer]);
+    elements.blackLabel.textContent = state.humanPlayer === BLACK ? 'あなた・先手' : `CPU・先手・${cpuStrategyName}`;
+    elements.whiteLabel.textContent = state.humanPlayer === WHITE ? 'あなた・後手' : `CPU・後手・${cpuStrategyName}`;
+    elements.modeText.textContent = `CPU対戦・${state.humanPlayer === BLACK ? '先手' : '後手'}・${difficultyName(cpuDifficulty)}・${cpuStrategyName}`;
   } else if (state.mode === 'local') {
     elements.blackLabel.textContent = 'プレイヤー1・先手';
     elements.whiteLabel.textContent = 'プレイヤー2・後手';
     elements.modeText.textContent = '二人対戦';
   } else if (state.mode === 'cpu-vs-cpu') {
-    elements.blackLabel.textContent = `CPU・先手・${difficultyName(state.cpuConfig[BLACK])}`;
-    elements.whiteLabel.textContent = `CPU・後手・${difficultyName(state.cpuConfig[WHITE])}`;
-    elements.modeText.textContent = `CPU同士・${difficultyName(state.cpuConfig[BLACK])} 対 ${difficultyName(state.cpuConfig[WHITE])}`;
+    elements.blackLabel.textContent = `CPU・先手・${difficultyName(state.cpuConfig[BLACK])}・${strategyLabel(state.cpuStrategy[BLACK])}`;
+    elements.whiteLabel.textContent = `CPU・後手・${difficultyName(state.cpuConfig[WHITE])}・${strategyLabel(state.cpuStrategy[WHITE])}`;
+    elements.modeText.textContent = `CPU同士・${strategyLabel(state.cpuStrategy[BLACK])} 対 ${strategyLabel(state.cpuStrategy[WHITE])}`;
   } else {
     elements.blackLabel.textContent = state.onlineRole === 'host' ? 'あなた・先手' : '対戦相手・先手';
     elements.whiteLabel.textContent = state.onlineRole === 'guest' ? 'あなた・後手' : '対戦相手・後手';
@@ -479,6 +500,10 @@ function cpuDifficultyForTurn() {
   return state.mode === 'cpu-vs-cpu' ? state.cpuConfig[state.position.turn] : cpuDifficulty;
 }
 
+function cpuStrategyForTurn() {
+  return state.cpuStrategy[state.position.turn] || null;
+}
+
 function cpuDelayMs() {
   if (state.mode === 'cpu-vs-cpu') return state.cpuDelay;
   return cpuDifficulty === 'hard' ? 180 : 300;
@@ -502,7 +527,8 @@ function maybeRunCpu() {
     if (token !== cpuToken || !isCpuTurn() || state.version !== expectedVersion || state.position.turn !== expectedTurn) return;
     try {
       const move = await chooseCpuMove(position, difficulty, {
-        timeLimitMs: difficulty === 'hard' ? 520 : difficulty === 'normal' ? 170 : 40,
+        timeLimitMs: CPU_TIME_LIMITS[difficulty] || CPU_TIME_LIMITS.normal,
+        strategy: cpuStrategyForTurn(),
       });
       if (token !== cpuToken || !isCpuTurn() || state.version !== expectedVersion || state.position.turn !== expectedTurn) return;
       elements.thinkingBadge.hidden = true;
@@ -520,7 +546,12 @@ function startCpuMode(humanPlayer) {
   stopOnline();
   preferredHumanPlayer = humanPlayer === WHITE ? WHITE : BLACK;
   localStorage.setItem('pocketShogiSide', preferredHumanPlayer === WHITE ? 'white' : 'black');
-  state = createState({ mode: 'cpu', humanPlayer: preferredHumanPlayer, viewPlayer: preferredHumanPlayer });
+  state = createState({
+    mode: 'cpu',
+    humanPlayer: preferredHumanPlayer,
+    viewPlayer: preferredHumanPlayer,
+    cpuStrategy: randomCpuStrategies(),
+  });
   history = [];
   selected = null;
   initializeRepetition();
@@ -545,10 +576,13 @@ function startCpuVsCpuMode() {
   stopOnline();
   const blackDifficulty = DIFFICULTIES.has(elements.blackCpuDifficulty.value) ? elements.blackCpuDifficulty.value : 'normal';
   const whiteDifficulty = DIFFICULTIES.has(elements.whiteCpuDifficulty.value) ? elements.whiteCpuDifficulty.value : 'normal';
+  const blackStrategy = selectedStrategy(elements.blackCpuStrategy);
+  const whiteStrategy = selectedStrategy(elements.whiteCpuStrategy);
   state = createState({
     mode: 'cpu-vs-cpu',
     viewPlayer: BLACK,
     cpuConfig: { [BLACK]: blackDifficulty, [WHITE]: whiteDifficulty },
+    cpuStrategy: { [BLACK]: blackStrategy, [WHITE]: whiteStrategy },
     cpuDelay: Number(elements.cpuVsCpuSpeed.value) || 650,
     cpuVsCpuPaused: false,
   });
