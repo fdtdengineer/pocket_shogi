@@ -14,14 +14,13 @@ import {
   positionHash,
   serializePosition,
 } from './engine/shogi.js';
-import { chooseCpuMove } from './engine/cpu.js';
+import { chooseAiMove, CPU_CHOICES } from './engine/ai-controller.js';
 import { AUTO_STRATEGY, resolveStrategy, strategyLabel } from './engine/opening-book.js';
-import { DqnClient } from './engine/dqn-client.js';
+import { AlphaShoClient } from './engine/alphasho/client.js';
 import { OnlineSession, normalizeRoomCode } from './online.js';
 
-const DIFFICULTIES = new Set(['easy', 'normal', 'hard']);
+const DIFFICULTIES = CPU_CHOICES;
 const STRATEGIES = new Set([AUTO_STRATEGY, 'yagura', 'mino', 'bogin']);
-const CPU_TIME_LIMITS = Object.freeze({ easy: 1200, normal: 2000, hard: 3500 });
 const storedDifficulty = localStorage.getItem('pocketShogiDifficulty');
 const initialDifficulty = DIFFICULTIES.has(storedDifficulty) ? storedDifficulty : 'normal';
 const storedSide = localStorage.getItem('pocketShogiSide') === 'white' ? WHITE : BLACK;
@@ -81,6 +80,11 @@ const elements = {
   declinePromotionButton: document.querySelector('#declinePromotionButton'),
   toast: document.querySelector('#toast'),
   fileLabels: [...document.querySelectorAll('.file-labels span')],
+  alphaShoControls: document.querySelector('#alphaShoControls'),
+  alphaShoStrength: document.querySelector('#alphaShoStrength'),
+  alphaShoModelInput: document.querySelector('#alphaShoModelInput'),
+  alphaShoClearModel: document.querySelector('#alphaShoClearModel'),
+  alphaShoModelStatus: document.querySelector('#alphaShoModelStatus'),
   rankLabels: [...document.querySelectorAll('.rank-labels span')],
 };
 
@@ -94,7 +98,7 @@ const cells = Array.from({ length: 81 }, (_, index) => {
   return button;
 });
 
-const dqnClient = new DqnClient();
+const alphaShoClient = new AlphaShoClient();
 let cpuDifficulty = initialDifficulty;
 let preferredHumanPlayer = storedSide;
 let state = createState();
@@ -105,6 +109,8 @@ let pendingPromotionMoves = null;
 let history = [];
 let repetitionCounts = new Map();
 let cpuToken = 0;
+let cpuAbortController = null;
+let alphaShoPreset = localStorage.getItem('pocketShogiAlphaShoPreset') || 'standard';
 let online = null;
 let toastTimer = null;
 
@@ -215,7 +221,30 @@ function setStatus(message, kind = 'ok') {
 }
 
 function difficultyName(value) {
-  return ({ easy: 'やさしい', normal: 'ふつう', hard: 'つよい' })[value] || 'ふつう';
+  return ({ easy: 'やさしい', normal: 'ふつう', hard: 'つよい', alphasho: 'AlphaSho' })[value] || 'ふつう';
+}
+
+function cpuDisplayName(choice, strategy) {
+  return choice === 'alphasho' ? 'AlphaSho' : `${difficultyName(choice)}・${strategyLabel(strategy)}`;
+}
+
+function updateAlphaShoControls() {
+  const selected = cpuDifficulty === 'alphasho'
+    || state.cpuConfig?.[BLACK] === 'alphasho'
+    || state.cpuConfig?.[WHITE] === 'alphasho';
+  if (elements.alphaShoControls) elements.alphaShoControls.hidden = !selected;
+  if (elements.alphaShoStrength) elements.alphaShoStrength.value = alphaShoPreset;
+}
+
+function updateAlphaShoModelStatus(message = null) {
+  if (!elements.alphaShoModelStatus) return;
+  if (message) {
+    elements.alphaShoModelStatus.textContent = message;
+  } else if (alphaShoClient.modelInfo?.name) {
+    elements.alphaShoModelStatus.textContent = `モデル: ${alphaShoClient.modelInfo.name}`;
+  } else {
+    elements.alphaShoModelStatus.textContent = '保存済みモデル、または models/alphasho-mobile.onnx を使用します。';
+  }
 }
 
 function playerName(player) {
@@ -345,18 +374,20 @@ function renderLabels() {
 
   if (state.mode === 'cpu') {
     const cpuPlayer = opponent(state.humanPlayer);
-    const cpuStrategyName = strategyLabel(state.cpuStrategy[cpuPlayer]);
-    elements.blackLabel.textContent = state.humanPlayer === BLACK ? 'あなた・先手' : `CPU・先手・${cpuStrategyName}`;
-    elements.whiteLabel.textContent = state.humanPlayer === WHITE ? 'あなた・後手' : `CPU・後手・${cpuStrategyName}`;
-    elements.modeText.textContent = `CPU対戦・${state.humanPlayer === BLACK ? '先手' : '後手'}・${difficultyName(cpuDifficulty)}・${cpuStrategyName}`;
+    const cpuName = cpuDisplayName(cpuDifficulty, state.cpuStrategy[cpuPlayer]);
+    elements.blackLabel.textContent = state.humanPlayer === BLACK ? 'あなた・先手' : `CPU・先手・${cpuName}`;
+    elements.whiteLabel.textContent = state.humanPlayer === WHITE ? 'あなた・後手' : `CPU・後手・${cpuName}`;
+    elements.modeText.textContent = `CPU対戦・${state.humanPlayer === BLACK ? '先手' : '後手'}・${cpuName}`;
   } else if (state.mode === 'local') {
     elements.blackLabel.textContent = 'プレイヤー1・先手';
     elements.whiteLabel.textContent = 'プレイヤー2・後手';
     elements.modeText.textContent = '二人対戦';
   } else if (state.mode === 'cpu-vs-cpu') {
-    elements.blackLabel.textContent = `CPU・先手・${difficultyName(state.cpuConfig[BLACK])}・${strategyLabel(state.cpuStrategy[BLACK])}`;
-    elements.whiteLabel.textContent = `CPU・後手・${difficultyName(state.cpuConfig[WHITE])}・${strategyLabel(state.cpuStrategy[WHITE])}`;
-    elements.modeText.textContent = `CPU同士・${strategyLabel(state.cpuStrategy[BLACK])} 対 ${strategyLabel(state.cpuStrategy[WHITE])}`;
+    const blackName = cpuDisplayName(state.cpuConfig[BLACK], state.cpuStrategy[BLACK]);
+    const whiteName = cpuDisplayName(state.cpuConfig[WHITE], state.cpuStrategy[WHITE]);
+    elements.blackLabel.textContent = `CPU・先手・${blackName}`;
+    elements.whiteLabel.textContent = `CPU・後手・${whiteName}`;
+    elements.modeText.textContent = `CPU同士・${blackName} 対 ${whiteName}`;
   } else {
     elements.blackLabel.textContent = state.onlineRole === 'host' ? 'あなた・先手' : '対戦相手・先手';
     elements.whiteLabel.textContent = state.onlineRole === 'guest' ? 'あなた・後手' : '対戦相手・後手';
@@ -411,6 +442,7 @@ function render() {
   elements.undoButton.disabled = history.length === 0 || state.mode === 'online';
   elements.autoPlayButton.hidden = state.mode !== 'cpu-vs-cpu';
   elements.autoPlayButton.textContent = state.cpuVsCpuPaused ? '再開' : '一時停止';
+  updateAlphaShoControls();
 }
 
 function selectBoardPiece(index) {
@@ -506,11 +538,14 @@ function cpuStrategyForTurn() {
 
 function cpuDelayMs() {
   if (state.mode === 'cpu-vs-cpu') return state.cpuDelay;
+  if (cpuDifficulty === 'alphasho') return 120;
   return cpuDifficulty === 'hard' ? 180 : 300;
 }
 
 function maybeRunCpu() {
   cpuToken += 1;
+  cpuAbortController?.abort();
+  cpuAbortController = null;
   const token = cpuToken;
   if (!isCpuTurn()) {
     elements.thinkingBadge.hidden = true;
@@ -520,21 +555,35 @@ function maybeRunCpu() {
   const expectedVersion = state.version;
   const expectedTurn = state.position.turn;
   const position = clonePosition(state.position);
-  const difficulty = cpuDifficultyForTurn();
+  const choice = cpuDifficultyForTurn();
+  const controller = new AbortController();
+  cpuAbortController = controller;
   elements.thinkingBadge.hidden = false;
 
   setTimeout(async () => {
     if (token !== cpuToken || !isCpuTurn() || state.version !== expectedVersion || state.position.turn !== expectedTurn) return;
     try {
-      const move = await chooseCpuMove(position, difficulty, {
-        timeLimitMs: CPU_TIME_LIMITS[difficulty] || CPU_TIME_LIMITS.normal,
+      const move = await chooseAiMove({
+        choice,
+        position,
+        legalMoves: generateLegalMoves(position, position.turn),
         strategy: cpuStrategyForTurn(),
+        repetitionEntries: [...repetitionCounts.entries()],
+        alphaShoClient,
+        alphaShoPreset,
+        signal: controller.signal,
+        onFallback: (error) => {
+          console.warn('AlphaSho failed; using the standard hard CPU.', error);
+          updateAlphaShoModelStatus('AlphaShoを読み込めないため、つよいCPUへ切り替えました。');
+          showToast('AlphaShoを読み込めないため、つよいCPUを使用します。');
+        },
       });
       if (token !== cpuToken || !isCpuTurn() || state.version !== expectedVersion || state.position.turn !== expectedTurn) return;
       elements.thinkingBadge.hidden = true;
       if (move) commitMove(move, { saveHistory: true });
       maybeRunCpu();
     } catch (error) {
+      if (error?.name === 'AbortError' || error?.message === 'ALPHASHO_CANCELLED') return;
       elements.thinkingBadge.hidden = true;
       console.error('CPU move failed.', error);
       showToast('CPUの指し手生成に失敗しました。新しい対局を開始してください。');
@@ -610,6 +659,8 @@ function resetCurrentGame() {
 function undoMove() {
   if (history.length === 0 || state.mode === 'online') return;
   cpuToken += 1;
+  cpuAbortController?.abort();
+  cpuAbortController = null;
   elements.thinkingBadge.hidden = true;
 
   let previous = history.pop();
@@ -647,6 +698,8 @@ function stopOnline() {
 
 function setupOnlineSession() {
   cpuToken += 1;
+  cpuAbortController?.abort();
+  cpuAbortController = null;
   elements.thinkingBadge.hidden = true;
   stopOnline();
   online = new OnlineSession();
@@ -825,6 +878,43 @@ for (const button of document.querySelectorAll('[data-difficulty]')) {
   });
 }
 
+
+if (elements.alphaShoStrength) {
+  elements.alphaShoStrength.value = alphaShoPreset;
+  elements.alphaShoStrength.addEventListener('change', () => {
+    alphaShoPreset = ['light', 'standard', 'strong'].includes(elements.alphaShoStrength.value)
+      ? elements.alphaShoStrength.value
+      : 'standard';
+    localStorage.setItem('pocketShogiAlphaShoPreset', alphaShoPreset);
+  });
+}
+if (elements.alphaShoModelInput) {
+  elements.alphaShoModelInput.addEventListener('change', async () => {
+    const file = elements.alphaShoModelInput.files?.[0];
+    if (!file) return;
+    updateAlphaShoModelStatus('モデルを読み込んでいます…');
+    try {
+      await alphaShoClient.loadModelFile(file, { persist: true });
+      updateAlphaShoModelStatus();
+      showToast('AlphaShoモデルを端末へ保存しました。');
+    } catch (error) {
+      console.error('AlphaSho model load failed.', error);
+      updateAlphaShoModelStatus(`読込失敗: ${error.message}`);
+      showToast('ONNXモデルを読み込めませんでした。');
+    } finally {
+      elements.alphaShoModelInput.value = '';
+    }
+  });
+}
+if (elements.alphaShoClearModel) {
+  elements.alphaShoClearModel.addEventListener('click', async () => {
+    await alphaShoClient.clearStoredModel();
+    updateAlphaShoModelStatus();
+    showToast('端末に保存したAlphaShoモデルを削除しました。');
+  });
+}
+alphaShoClient.addEventListener('modelchange', () => updateAlphaShoModelStatus());
+
 elements.promoteButton.addEventListener('click', () => {
   const move = pendingPromotionMoves?.find((candidate) => candidate.promote);
   pendingPromotionMoves = null;
@@ -844,6 +934,10 @@ elements.autoPlayButton.addEventListener('click', () => {
   if (state.mode !== 'cpu-vs-cpu') return;
   state.cpuVsCpuPaused = !state.cpuVsCpuPaused;
   cpuToken += 1;
+  if (state.cpuVsCpuPaused) {
+    cpuAbortController?.abort();
+    cpuAbortController = null;
+  }
   elements.thinkingBadge.hidden = state.cpuVsCpuPaused;
   render();
   if (!state.cpuVsCpuPaused) maybeRunCpu();
@@ -897,7 +991,8 @@ render();
 maybeRunCpu();
 
 window.addEventListener('pagehide', () => {
-  dqnClient.destroy();
+  cpuAbortController?.abort();
+  alphaShoClient.destroy();
   stopOnline();
 });
 

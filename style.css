@@ -247,3 +247,36 @@ select, input { width: 100%; margin-top: 7px; padding: 12px; color: var(--text);
   .choice-piece { width: 45px; height: 50px; }
   footer { padding: 0 4px; }
 }
+
+.alphasho-controls {
+  margin-top: 10px;
+  padding: 11px;
+  border: 1px solid rgba(255, 216, 137, .18);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, .16);
+}
+.alphasho-controls > label {
+  color: var(--muted);
+  font-size: .76rem;
+  font-weight: 800;
+}
+.alphasho-controls select { margin-top: 6px; padding: 10px; }
+.alphasho-model-actions { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
+.model-file-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  margin: 0;
+  padding: 10px 12px;
+  font-size: .76rem;
+}
+.model-file-button input { display: none; }
+.alphasho-model-actions .text-button { margin-left: auto; font-size: .72rem; }
+.model-status { display: block; margin-top: 8px; color: var(--muted); line-height: 1.45; }
+
+@media (max-width: 560px) {
+  .alphasho-model-actions { align-items: stretch; flex-direction: column; gap: 4px; }
+  .model-file-button { width: 100%; }
+  .alphasho-model-actions .text-button { margin-left: 0; }
+}
