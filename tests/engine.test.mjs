@@ -13,6 +13,7 @@ import {
   moveKey,
 } from '../engine/shogi.js';
 import { chooseCpuMove } from '../engine/cpu.js';
+import { findOpeningMove, openingPlan } from '../engine/opening-book.js';
 
 function emptyPosition(turn = BLACK) {
   const board = Array(81).fill(null);
@@ -92,4 +93,38 @@ test('all CPU difficulty levels return a legal move', async () => {
     assert.ok(move, `${difficulty} should return a move`);
     assert.ok(legalKeys.has(moveKey(move)), `${difficulty} should return a legal move`);
   }
+});
+
+
+test('opening book starts each supported strategy with its basic first move', () => {
+  const expected = {
+    yagura: 'm:56:47:0',
+    mino: 'm:56:47:0',
+    bogin: 'm:61:52:0',
+  };
+  for (const strategy of Object.keys(expected)) {
+    const position = createInitialPosition();
+    const entry = findOpeningMove(position, BLACK, strategy, generateLegalMoves(position));
+    assert.ok(entry, `${strategy} should have an opening move`);
+    assert.equal(moveKey(entry.move), expected[strategy]);
+  }
+});
+
+test('opening plans are mirrored correctly for the second player', () => {
+  const blackPlan = openingPlan('mino', BLACK);
+  const whitePlan = openingPlan('mino', WHITE);
+  assert.equal(blackPlan.length, whitePlan.length);
+  assert.equal(whitePlan[0].from, 80 - blackPlan[0].from);
+  assert.equal(whitePlan[0].to, 80 - blackPlan[0].to);
+});
+
+test('CPU follows a safe selected opening strategy', async () => {
+  const position = createInitialPosition();
+  const move = await chooseCpuMove(position, 'easy', {
+    strategy: 'bogin',
+    timeLimitMs: 120,
+    maxDepth: 1,
+    quiescenceDepth: 1,
+  });
+  assert.equal(moveKey(move), 'm:61:52:0');
 });

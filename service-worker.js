@@ -1,7 +1,7 @@
-const CACHE_NAME = 'pocket-shogi-v2';
+const CACHE_NAME = 'pocket-shogi-v3';
 const ASSETS = [
   './', './index.html', './style.css', './app.js', './online.js',
-  './engine/shogi.js', './engine/cpu.js', './engine/dqn-client.js',
+  './engine/shogi.js', './engine/cpu.js', './engine/opening-book.js', './engine/dqn-client.js',
   './manifest.webmanifest', './icon.svg'
 ];
 
