@@ -87,7 +87,24 @@
             <button type="button" data-difficulty="easy">やさしい</button>
             <button type="button" data-difficulty="normal" class="is-selected">ふつう</button>
             <button type="button" data-difficulty="hard">つよい</button>
-            <button type="button" disabled title="将来のDQNモデル用インターフェースを準備済み">DQN<br><small>準備中</small></button>
+            <button type="button" data-difficulty="alphasho">AlphaSho<br><small>実験</small></button>
+          </div>
+          <div id="alphaShoControls" class="alphasho-controls" hidden>
+            <label>探索量
+              <select id="alphaShoStrength">
+                <option value="light">軽量・16回</option>
+                <option value="standard" selected>標準・32回</option>
+                <option value="strong">強力・64回</option>
+              </select>
+            </label>
+            <div class="alphasho-model-actions">
+              <label class="outline-button model-file-button">
+                ONNXを読み込む
+                <input id="alphaShoModelInput" type="file" accept=".onnx,application/octet-stream" />
+              </label>
+              <button id="alphaShoClearModel" class="text-button danger-text" type="button">保存モデルを削除</button>
+            </div>
+            <small id="alphaShoModelStatus" class="model-status">保存済みモデル、または models/alphasho-mobile.onnx を使用します。</small>
           </div>
         </article>
       </section>
@@ -167,6 +184,7 @@
               <option value="easy">やさしい</option>
               <option value="normal" selected>ふつう</option>
               <option value="hard">つよい</option>
+              <option value="alphasho">AlphaSho</option>
             </select>
           </label>
           <label>後手CPU
@@ -174,6 +192,7 @@
               <option value="easy">やさしい</option>
               <option value="normal" selected>ふつう</option>
               <option value="hard">つよい</option>
+              <option value="alphasho">AlphaSho</option>
             </select>
           </label>
           <label>先手の戦法
@@ -200,7 +219,7 @@
             </select>
           </label>
         </div>
-        <p class="small-note">定跡手が危険な場合は、自動的に通常探索へ切り替わります。</p>
+        <p class="small-note">AlphaShoは読み込んだONNXモデルを使用し、失敗時は「つよい」CPUへ戻ります。</p>
         <button id="startCpuVsCpuButton" class="primary-button full-width" type="button">自動対局を開始</button>
       </div>
 
