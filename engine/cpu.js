@@ -242,7 +242,7 @@ function difficultyConfig(difficulty, options) {
   if (difficulty === 'easy') {
     return {
       maxDepth: 1,
-      timeLimitMs: options.timeLimitMs ?? 180,
+      timeLimitMs: Math.max(options.timeLimitMs ?? 180, 170),
       useQuiescence: false,
       quiescenceDepth: 0,
       randomSpread: 45,
@@ -251,7 +251,7 @@ function difficultyConfig(difficulty, options) {
   if (difficulty === 'hard') {
     return {
       maxDepth: options.maxDepth ?? 5,
-      timeLimitMs: options.timeLimitMs ?? 1200,
+      timeLimitMs: Math.max(options.timeLimitMs ?? 1200, 1200),
       useQuiescence: true,
       quiescenceDepth: options.quiescenceDepth ?? 4,
       randomSpread: null,
@@ -259,7 +259,7 @@ function difficultyConfig(difficulty, options) {
   }
   return {
     maxDepth: 3,
-    timeLimitMs: options.timeLimitMs ?? 700,
+    timeLimitMs: Math.max(options.timeLimitMs ?? 700, 520),
     useQuiescence: false,
     quiescenceDepth: 0,
     randomSpread: null,
