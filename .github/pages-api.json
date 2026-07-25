@@ -1,0 +1,20 @@
+{
+  "http_code": 200,
+  "checked_at": "2026-07-25T05:56:17.455464+00:00",
+  "response": {
+    "url": "https://api.github.com/repos/fdtdengineer/pocket_shogi/pages",
+    "status": "built",
+    "cname": null,
+    "custom_404": false,
+    "html_url": "https://fdtdengineer.github.io/pocket_shogi/",
+    "build_type": "legacy",
+    "source": {
+      "branch": "gh-pages",
+      "path": "/"
+    },
+    "public": true,
+    "protected_domain_state": null,
+    "pending_domain_unverified_at": null,
+    "https_enforced": true
+  }
+}
