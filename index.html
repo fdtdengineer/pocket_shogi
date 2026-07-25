@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#160e08" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="ポケット将棋" />
+  <meta name="description" content="CPU対戦、二人対戦、CPU同士、オンライン対戦に対応したレスポンシブ将棋アプリ。" />
+  <title>ポケット将棋</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js" defer></script>
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">いつでも、どこでも一局</p>
+        <h1>ポケット将棋</h1>
+      </div>
+      <button id="menuButton" class="icon-button" type="button" aria-label="対局メニューを開く">☰</button>
+    </header>
+
+    <section class="game-layout">
+      <aside class="side-panel info-panel">
+        <article id="whiteCard" class="player-card">
+          <div class="player-heading">
+            <span class="turn-mark white-mark">▽</span>
+            <span id="whiteLabel">CPU・後手</span>
+          </div>
+          <strong id="whiteClock">後手</strong>
+        </article>
+
+        <article class="hand-card">
+          <span class="card-title" id="whiteHandTitle">後手の持ち駒</span>
+          <div id="whiteHand" class="hand-grid" aria-label="後手の持ち駒"></div>
+        </article>
+
+        <article class="info-card">
+          <span class="card-title">対局モード</span>
+          <strong id="modeText">CPU対戦・先手</strong>
+          <small id="moveCountText">1手目</small>
+        </article>
+      </aside>
+
+      <section class="center-column">
+        <div class="status-bar" aria-live="polite">
+          <span id="connectionDot" class="status-dot"></span>
+          <strong id="statusText">先手番です</strong>
+        </div>
+
+        <div class="board-frame">
+          <div class="file-labels" aria-hidden="true">
+            <span>９</span><span>８</span><span>７</span><span>６</span><span>５</span><span>４</span><span>３</span><span>２</span><span>１</span>
+          </div>
+          <div class="board-row">
+            <div id="board" class="board" role="grid" aria-label="将棋盤"></div>
+            <div class="rank-labels" aria-hidden="true">
+              <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>七</span><span>八</span><span>九</span>
+            </div>
+          </div>
+          <div id="thinkingBadge" class="thinking-badge" hidden>CPUが考えています…</div>
+        </div>
+
+        <article class="mobile-hand-card">
+          <span class="card-title" id="mobileOpponentHandTitle">相手の持ち駒</span>
+          <div id="mobileOpponentHand" class="hand-grid"></div>
+        </article>
+
+        <article class="mobile-hand-card primary-hand">
+          <span class="card-title" id="mobilePlayerHandTitle">自分の持ち駒</span>
+          <div id="mobilePlayerHand" class="hand-grid"></div>
+        </article>
+
+        <div class="action-row">
+          <button id="undoButton" class="secondary-button" type="button">待った</button>
+          <button id="autoPlayButton" class="secondary-button" type="button" hidden>一時停止</button>
+          <button id="newGameButton" class="primary-button" type="button">新しい対局</button>
+        </div>
+
+        <article class="control-card difficulty-card">
+          <span class="card-title">CPUの強さ</span>
+          <div class="segmented difficulty-options" role="group" aria-label="CPUの強さ">
+            <button type="button" data-difficulty="easy">やさしい</button>
+            <button type="button" data-difficulty="normal" class="is-selected">ふつう</button>
+            <button type="button" data-difficulty="hard">つよい</button>
+            <button type="button" disabled title="将来のDQNモデル用インターフェースを準備済み">DQN<br><small>準備中</small></button>
+          </div>
+        </article>
+      </section>
+
+      <aside class="side-panel controls-panel">
+        <article id="blackCard" class="player-card is-active">
+          <div class="player-heading">
+            <span class="turn-mark black-mark">▲</span>
+            <span id="blackLabel">あなた・先手</span>
+          </div>
+          <strong id="blackClock">先手</strong>
+        </article>
+
+        <article class="hand-card">
+          <span class="card-title" id="blackHandTitle">先手の持ち駒</span>
+          <div id="blackHand" class="hand-grid" aria-label="先手の持ち駒"></div>
+        </article>
+
+        <article class="control-card online-summary">
+          <span class="card-title">オンライン対戦</span>
+          <p>6文字の合言葉で、友だちと直接対戦できます。</p>
+          <button id="onlineButton" class="outline-button" type="button">オンライン対戦</button>
+        </article>
+
+        <article class="control-card desktop-only">
+          <span class="card-title">操作方法</span>
+          <p>盤上の駒または持ち駒を選び、移動先をタップしてください。</p>
+        </article>
+      </aside>
+    </section>
+
+    <footer><span>GitHub Pages対応</span><span>iPhone / Android / PC</span></footer>
+  </main>
+
+  <div id="modalBackdrop" class="modal-backdrop is-visible">
+    <section id="menuModal" class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <button id="closeModalButton" class="modal-close" type="button" aria-label="閉じる">×</button>
+      <p class="modal-kicker">対局方法を選択</p>
+      <h2 id="modalTitle">ポケット将棋</h2>
+      <p class="modal-copy">CPU戦、同じ端末での対戦、CPU同士の観戦、オンライン対戦に対応しています。</p>
+
+      <div id="modeChooser" class="mode-grid">
+        <button id="cpuModeButton" class="mode-button" type="button">
+          <span class="mode-icon">☗</span><strong>CPU対戦</strong><small>先手・後手を選択</small>
+        </button>
+        <button id="localModeButton" class="mode-button" type="button">
+          <span class="mode-icon">☖☗</span><strong>二人対戦</strong><small>この端末を交互に使用</small>
+        </button>
+        <button id="cpuVsCpuModeButton" class="mode-button" type="button">
+          <span class="mode-icon">⚙</span><strong>CPU同士</strong><small>自動対局を観戦</small>
+        </button>
+        <button id="onlineModeButton" class="mode-button accent-mode" type="button">
+          <span class="mode-icon">◎</span><strong>オンライン</strong><small>部屋を作成・参加</small>
+        </button>
+      </div>
+
+      <div id="cpuPanel" class="sub-panel" hidden>
+        <button class="text-button back-to-modes" type="button">← 戻る</button>
+        <h3>手番を選択</h3>
+        <p class="small-note">先手が最初に指します。後手を選ぶとCPUが初手を指します。</p>
+        <div class="side-choice-grid">
+          <button id="playBlackButton" class="side-choice-button" type="button">
+            <span class="choice-piece">王</span><span><strong>先手で対局</strong><small>あなたが初手</small></span>
+          </button>
+          <button id="playWhiteButton" class="side-choice-button" type="button">
+            <span class="choice-piece opponent-piece">玉</span><span><strong>後手で対局</strong><small>CPUが初手</small></span>
+          </button>
+        </div>
+      </div>
+
+      <div id="cpuVsCpuPanel" class="sub-panel" hidden>
+        <button class="text-button back-to-modes" type="button">← 戻る</button>
+        <h3>CPU同士の設定</h3>
+        <div class="select-grid">
+          <label>先手CPU
+            <select id="blackCpuDifficulty">
+              <option value="easy">やさしい</option>
+              <option value="normal" selected>ふつう</option>
+              <option value="hard">つよい</option>
+            </select>
+          </label>
+          <label>後手CPU
+            <select id="whiteCpuDifficulty">
+              <option value="easy">やさしい</option>
+              <option value="normal" selected>ふつう</option>
+              <option value="hard">つよい</option>
+            </select>
+          </label>
+          <label>指し手の間隔
+            <select id="cpuVsCpuSpeed">
+              <option value="250">速い</option>
+              <option value="650" selected>ふつう</option>
+              <option value="1200">ゆっくり</option>
+            </select>
+          </label>
+        </div>
+        <button id="startCpuVsCpuButton" class="primary-button full-width" type="button">自動対局を開始</button>
+      </div>
+
+      <div id="onlinePanel" class="sub-panel" hidden>
+        <button class="text-button back-to-modes" type="button">← 戻る</button>
+        <div class="online-actions">
+          <button id="createRoomButton" class="primary-button full-width" type="button">部屋を作る</button>
+          <div class="or-divider"><span>または</span></div>
+          <label for="roomCodeInput">合言葉</label>
+          <div class="join-row">
+            <input id="roomCodeInput" type="text" inputmode="text" maxlength="6" autocomplete="off" placeholder="ABC234" aria-label="合言葉" />
+            <button id="joinRoomButton" class="outline-button compact" type="button">参加</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="waitingPanel" class="waiting-panel" hidden>
+        <div class="pulse-ring"><span>王</span></div>
+        <p id="waitingTitle" class="waiting-title">対戦相手を待っています…</p>
+        <div id="roomCodeBox" class="room-code-box">
+          <span>合言葉</span>
+          <strong id="roomCodeText">------</strong>
+        </div>
+        <button id="shareRoomButton" class="outline-button" type="button">招待を共有</button>
+        <p id="onlineStatusText" class="small-note">この画面を開いたままにしてください。</p>
+        <button id="cancelOnlineButton" class="text-button danger-text" type="button">キャンセル</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="promotionBackdrop" class="modal-backdrop promotion-backdrop">
+    <section class="promotion-card" role="dialog" aria-modal="true" aria-labelledby="promotionTitle">
+      <p class="modal-kicker">成りの選択</p>
+      <h2 id="promotionTitle">この駒を成りますか？</h2>
+      <div class="promotion-actions">
+        <button id="promoteButton" class="primary-button" type="button">成る</button>
+        <button id="declinePromotionButton" class="secondary-button" type="button">成らない</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
