@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BLACK,
+  WHITE,
   applyMove,
   createInitialPosition,
   createPiece,
@@ -16,7 +17,7 @@ import { chooseCpuMove } from '../engine/cpu.js';
 function emptyPosition(turn = BLACK) {
   const board = Array(81).fill(null);
   board[indexOf(8, 4)] = createPiece('K', BLACK);
-  board[indexOf(0, 4)] = createPiece('K', 'white');
+  board[indexOf(0, 4)] = createPiece('K', WHITE);
   return { board, hands: emptyHands(), turn, moveNumber: 1, lastMove: null };
 }
 
@@ -30,7 +31,7 @@ test('initial position has all 40 pieces and legal opening moves', () => {
 test('a capture adds the demoted captured piece to hand', () => {
   const position = emptyPosition();
   position.board[indexOf(4, 4)] = createPiece('R', BLACK);
-  position.board[indexOf(3, 4)] = createPiece('P', 'white', true);
+  position.board[indexOf(3, 4)] = createPiece('P', WHITE, true);
   const move = generateLegalMoves(position).find((candidate) => candidate.from === indexOf(4, 4) && candidate.to === indexOf(3, 4));
   const next = applyMove(position, move);
   assert.equal(next.hands[BLACK].P, 1);
@@ -63,25 +64,32 @@ test('nifu prevents a second unpromoted pawn drop on the same file', () => {
 
 test('a pinned piece cannot expose its own king', () => {
   const position = emptyPosition();
+  position.board[indexOf(8, 4)] = createPiece('K', BLACK);
   position.board[indexOf(6, 4)] = createPiece('G', BLACK);
-  position.board[indexOf(2, 4)] = createPiece('R', 'white');
-  const illegal = generateLegalMoves(position).filter((move) => move.from === indexOf(6, 4) && move.to === indexOf(6, 3));
-  assert.equal(illegal.length, 0);
+  position.board[indexOf(2, 4)] = createPiece('R', WHITE);
+  const illegalSideways = generateLegalMoves(position).filter((move) => move.from === indexOf(6, 4) && move.to === indexOf(6, 3));
+  assert.equal(illegalSideways.length, 0);
 });
 
-test('check can be detected and every legal move answers it', () => {
+test('check can be detected and legal moves must answer it', () => {
   const position = emptyPosition();
-  position.board[indexOf(4, 4)] = createPiece('R', 'white');
+  position.board[indexOf(4, 4)] = createPiece('R', WHITE);
   assert.equal(isInCheck(position, BLACK), true);
   const moves = generateLegalMoves(position, BLACK);
   assert.ok(moves.length > 0);
   for (const move of moves) assert.equal(isInCheck(applyMove(position, move), BLACK), false);
 });
 
-test('CPU returns a legal move', async () => {
-  const position = createInitialPosition();
-  const legalKeys = new Set(generateLegalMoves(position).map(moveKey));
-  const move = await chooseCpuMove(position, 'normal', { timeLimitMs: 80 });
-  assert.ok(move);
-  assert.ok(legalKeys.has(moveKey(move)));
+test('all CPU difficulty levels return a legal move', async () => {
+  for (const difficulty of ['easy', 'normal', 'hard']) {
+    const position = createInitialPosition();
+    const legalKeys = new Set(generateLegalMoves(position).map(moveKey));
+    const move = await chooseCpuMove(position, difficulty, {
+      timeLimitMs: 80,
+      maxDepth: 3,
+      quiescenceDepth: 2,
+    });
+    assert.ok(move, `${difficulty} should return a move`);
+    assert.ok(legalKeys.has(moveKey(move)), `${difficulty} should return a legal move`);
+  }
 });
