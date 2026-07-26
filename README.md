@@ -5,7 +5,7 @@
 ## 実装済み機能
 
 - CPU対戦（先手・後手を選択可能）
-- 既存の定跡＋αβ探索CPU
+- AlphaSho由来の反復深化Negamax＋αβ探索CPU
 - ローカル学習したAlphaSho互換ONNXモデルによるPolicy-Value推論＋PUCT MCTS
 - 二人対戦（同じ端末を交互に使用）
 - CPU同士の自動対戦（一時停止・再開、双方のCPUを設定可能）
@@ -18,19 +18,17 @@
 
 ## 標準CPU
 
-`engine/cpu.js` にブラウザ内CPUを実装しています。置換表、静止探索、反復深化、玉周辺評価を使用し、思考時間と探索上限で強さを分けています。
+`engine/cpu.js` は、AlphaShoの `src/alphasho/heuristicplayer/` をブラウザ向けJavaScriptへ移植した単一の探索エンジンです。従来の標準CPU実装は削除し、全難易度を同じ反復深化Negamax、Alpha-Beta枝刈り、置換表、駒得・持ち駒評価の基盤へ統一しています。
 
-- `easy`: 最大5手先、標準1.2秒
-- `normal`: 最大6手先、標準2秒
-- `hard`: 最大7手先、標準3.5秒
+- `easy`: AlphaSho基本版。素材・持ち駒・王手評価、取り駒・成り優先、最大10,000ノード、標準1.2秒
+- `normal`: 基本版＋静止探索、駒の前進・中央化、玉の安全度、履歴ヒューリスティック、簡易定跡。最大40,000ノード、標準2秒
+- `hard`: `normal`＋飛角香の可動性、敵玉への圧力、PVS、aspiration window、killer move、王手優先。最大120,000ノード、標準3.5秒
 
-序盤は `engine/opening-book.js` の簡易定跡を利用します。
+`normal` と `hard` の序盤は `engine/opening-book.js` の簡易定跡を利用します。
 
 - 矢倉
 - 四間飛車・美濃囲い
 - 棒銀
-
-既存CPUはAlphaSho追加後もそのまま利用できます。
 
 ## AlphaSho CPU
 

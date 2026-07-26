@@ -3,262 +3,463 @@ import {
   WHITE,
   HAND_TYPES,
   applyMove,
+  colOf,
+  findKing,
   generateLegalMoves,
   isInCheck,
   moveKey,
   opponent,
+  pieceAttacksSquare,
   positionHash,
   rowOf,
 } from './shogi.js';
 import { findOpeningMove, strategyMoveBonus } from './opening-book.js';
 
-const VALUES = Object.freeze({
+// This engine is a browser-oriented port of AlphaSho's classical
+// heuristicplayer: iterative deepening, negamax alpha-beta, a transposition
+// table, material/hand evaluation, and tactical move ordering. Normal and hard
+// add progressively more search and evaluation features on top of that base.
+const MATE_SCORE = 1_000_000;
+const INF = MATE_SCORE + 10_000;
+const TIMEOUT_MESSAGE = 'CPU_TIMEOUT';
+
+const PIECE_VALUES = Object.freeze({
   P: 100,
   L: 300,
   N: 320,
-  S: 430,
+  S: 450,
   G: 520,
-  B: 750,
-  R: 900,
-  K: 50000,
+  B: 800,
+  R: 1_000,
+  K: 0,
 });
 
-const PROMOTION_BONUS = Object.freeze({ P: 420, L: 230, N: 210, S: 100, B: 180, R: 220 });
-const MATE_SCORE = 100000;
-const TIMEOUT_MESSAGE = 'CPU_TIMEOUT';
+const PROMOTED_VALUES = Object.freeze({
+  P: 520,
+  L: 520,
+  N: 520,
+  S: 520,
+  B: 950,
+  R: 1_150,
+});
+
+const DIFFICULTIES = Object.freeze({
+  easy: Object.freeze({
+    maxDepth: 128,
+    maxNodes: 10_000,
+    timeLimitMs: 1_200,
+    evaluation: 'base',
+    quiescenceDepth: 0,
+    useOpeningBook: false,
+    openingTolerance: 0,
+    useHistory: false,
+    useKillers: false,
+    usePvs: false,
+    orderChecks: false,
+    aspirationWindow: 0,
+  }),
+  normal: Object.freeze({
+    maxDepth: 8,
+    maxNodes: 40_000,
+    timeLimitMs: 2_000,
+    evaluation: 'positional',
+    quiescenceDepth: 4,
+    useOpeningBook: true,
+    openingTolerance: 180,
+    useHistory: true,
+    useKillers: false,
+    usePvs: false,
+    orderChecks: false,
+    aspirationWindow: 0,
+  }),
+  hard: Object.freeze({
+    maxDepth: 12,
+    maxNodes: 120_000,
+    timeLimitMs: 3_500,
+    evaluation: 'advanced',
+    quiescenceDepth: 7,
+    useOpeningBook: true,
+    openingTolerance: 90,
+    useHistory: true,
+    useKillers: true,
+    usePvs: true,
+    orderChecks: true,
+    aspirationWindow: 120,
+  }),
+});
 
 function now() {
   return globalThis.performance?.now?.() ?? Date.now();
 }
 
 function pieceValue(piece) {
-  return VALUES[piece.type] + (piece.promoted ? (PROMOTION_BONUS[piece.type] || 0) : 0);
+  if (!piece) return 0;
+  if (piece.promoted && PROMOTED_VALUES[piece.type]) return PROMOTED_VALUES[piece.type];
+  return PIECE_VALUES[piece.type] || 0;
 }
 
-function advancement(piece, row) {
-  if (piece.type === 'K' || piece.type === 'G' || piece.type === 'R' || piece.type === 'B') return 0;
-  const progress = piece.owner === BLACK ? 8 - row : row;
-  return progress * (piece.type === 'P' ? 5 : 2);
+function difficultyConfig(difficulty, options = {}) {
+  const preset = DIFFICULTIES[difficulty] || DIFFICULTIES.normal;
+  return {
+    ...preset,
+    maxDepth: options.maxDepth ?? preset.maxDepth,
+    maxNodes: options.maxNodes ?? options.maxPlayouts ?? preset.maxNodes,
+    timeLimitMs: options.timeLimitMs ?? preset.timeLimitMs,
+    quiescenceDepth: options.quiescenceDepth ?? preset.quiescenceDepth,
+  };
 }
 
-function kingSafety(position, player) {
-  const king = position.board.findIndex((piece) => piece?.owner === player && piece.type === 'K');
-  if (king < 0) return -MATE_SCORE;
+function sideSign(player, perspective) {
+  return player === perspective ? 1 : -1;
+}
 
-  const row = Math.floor(king / 9);
-  const col = king % 9;
+function advancementBonus(piece, square) {
+  if (piece.type === 'K' || piece.type === 'G' || piece.type === 'B' || piece.type === 'R') return 0;
+  const progress = piece.owner === BLACK ? 8 - rowOf(square) : rowOf(square);
+  if (piece.type === 'P') return progress * 5;
+  if (piece.type === 'L' || piece.type === 'N') return progress * 2;
+  return progress * 3;
+}
+
+function centralizationBonus(piece, square) {
+  if (piece.type === 'K' || piece.type === 'L') return 0;
+  const distance = Math.abs(rowOf(square) - 4) + Math.abs(colOf(square) - 4);
+  const weight = piece.type === 'R' || piece.type === 'B' ? 4 : 2;
+  return Math.max(0, 8 - distance) * weight;
+}
+
+function neighboringDefenders(position, player) {
+  const king = findKing(position, player);
+  if (king < 0) return -100;
+  const kingRow = rowOf(king);
+  const kingCol = colOf(king);
   let defenders = 0;
+  let shield = 0;
+  const forward = player === BLACK ? -1 : 1;
+
   for (let dr = -1; dr <= 1; dr += 1) {
     for (let dc = -1; dc <= 1; dc += 1) {
       if (dr === 0 && dc === 0) continue;
-      const nextRow = row + dr;
-      const nextCol = col + dc;
-      if (nextRow < 0 || nextRow >= 9 || nextCol < 0 || nextCol >= 9) continue;
-      if (position.board[nextRow * 9 + nextCol]?.owner === player) defenders += 1;
+      const row = kingRow + dr;
+      const col = kingCol + dc;
+      if (row < 0 || row >= 9 || col < 0 || col >= 9) continue;
+      const piece = position.board[row * 9 + col];
+      if (piece?.owner === player) {
+        defenders += 1;
+        if (dr === forward && ['P', 'G', 'S'].includes(piece.type)) shield += 1;
+      }
     }
   }
-  return defenders * 8;
+  return defenders * 10 + shield * 8;
 }
 
-export function evaluatePosition(position, perspective) {
+function kingCampBonus(position, player) {
+  const king = findKing(position, player);
+  if (king < 0) return -MATE_SCORE;
+  const row = rowOf(king);
+  const col = colOf(king);
+  const homeProgress = player === BLACK ? row : 8 - row;
+  const sideDistance = Math.abs(col - 4);
+  return homeProgress * 3 + sideDistance * 5;
+}
+
+function slidingFreedom(position, square, piece) {
+  if (!['R', 'B', 'L'].includes(piece.type)) return 0;
+  const directions = [];
+  if (piece.type === 'R') directions.push([-1, 0], [1, 0], [0, -1], [0, 1]);
+  if (piece.type === 'B') directions.push([-1, -1], [-1, 1], [1, -1], [1, 1]);
+  if (piece.type === 'L') directions.push([piece.owner === BLACK ? -1 : 1, 0]);
+
+  let freedom = 0;
+  for (const [dr, dc] of directions) {
+    let row = rowOf(square) + dr;
+    let col = colOf(square) + dc;
+    while (row >= 0 && row < 9 && col >= 0 && col < 9) {
+      const target = position.board[row * 9 + col];
+      if (!target) freedom += 1;
+      else {
+        if (target.owner !== piece.owner) freedom += 1;
+        break;
+      }
+      row += dr;
+      col += dc;
+    }
+  }
+  return freedom * 2;
+}
+
+function kingPressure(position, attacker) {
+  const defender = opponent(attacker);
+  const king = findKing(position, defender);
+  if (king < 0) return MATE_SCORE;
+  const targets = [king];
+  const kingRow = rowOf(king);
+  const kingCol = colOf(king);
+  for (let dr = -1; dr <= 1; dr += 1) {
+    for (let dc = -1; dc <= 1; dc += 1) {
+      const row = kingRow + dr;
+      const col = kingCol + dc;
+      if (row >= 0 && row < 9 && col >= 0 && col < 9) targets.push(row * 9 + col);
+    }
+  }
+
+  let pressure = 0;
+  for (let from = 0; from < 81; from += 1) {
+    const piece = position.board[from];
+    if (piece?.owner !== attacker) continue;
+    for (const target of targets) {
+      if (pieceAttacksSquare(position, from, target)) pressure += target === king ? 8 : 2;
+    }
+  }
+  return pressure;
+}
+
+export function evaluatePosition(position, perspective = position.turn, difficulty = 'easy') {
+  const config = typeof difficulty === 'string' ? difficultyConfig(difficulty) : difficulty;
   let score = 0;
-  for (let index = 0; index < 81; index += 1) {
-    const piece = position.board[index];
+
+  for (let square = 0; square < 81; square += 1) {
+    const piece = position.board[square];
     if (!piece) continue;
-    const sign = piece.owner === perspective ? 1 : -1;
-    score += sign * (pieceValue(piece) + advancement(piece, rowOf(index)));
+    const sign = sideSign(piece.owner, perspective);
+    score += sign * pieceValue(piece);
+
+    if (config.evaluation !== 'base') {
+      score += sign * advancementBonus(piece, square);
+      score += sign * centralizationBonus(piece, square);
+    }
+    if (config.evaluation === 'advanced') {
+      score += sign * slidingFreedom(position, square, piece);
+    }
   }
 
   for (const player of [BLACK, WHITE]) {
-    const sign = player === perspective ? 1 : -1;
+    const sign = sideSign(player, perspective);
     for (const type of HAND_TYPES) {
-      score += sign * (position.hands[player][type] || 0) * VALUES[type] * 0.92;
+      score += sign * (position.hands[player][type] || 0) * PIECE_VALUES[type];
     }
   }
 
-  score += kingSafety(position, perspective);
-  score -= kingSafety(position, opponent(perspective));
-  if (isInCheck(position, opponent(perspective))) score += 45;
-  if (isInCheck(position, perspective)) score -= 55;
+  if (config.evaluation !== 'base') {
+    score += neighboringDefenders(position, perspective);
+    score -= neighboringDefenders(position, opponent(perspective));
+    score += kingCampBonus(position, perspective);
+    score -= kingCampBonus(position, opponent(perspective));
+  }
+
+  if (config.evaluation === 'advanced') {
+    score += kingPressure(position, perspective) * 3;
+    score -= kingPressure(position, opponent(perspective)) * 3;
+  }
+
+  if (isInCheck(position, perspective)) score -= config.evaluation === 'base' ? 35 : 55;
+  if (isInCheck(position, opponent(perspective))) score += config.evaluation === 'base' ? 35 : 45;
   return score;
 }
 
-function terminalScore(position, perspective, legalMoves, ply) {
-  if (legalMoves.length > 0) return null;
-  if (!isInCheck(position, position.turn)) return 0;
-  return position.turn === perspective ? -MATE_SCORE + ply : MATE_SCORE - ply;
+function evaluateForTurn(position, config) {
+  return evaluatePosition(position, position.turn, config);
 }
 
 function isCapture(position, move) {
   return move.kind === 'move' && Boolean(position.board[move.to]);
 }
 
-function tacticalScore(position, move, preferredMoveKey = null) {
-  if (preferredMoveKey && moveKey(move) === preferredMoveKey) return 1_000_000;
-  if (move.kind === 'drop') return VALUES[move.pieceType] * 0.02;
-  const captured = position.board[move.to];
-  const moving = position.board[move.from];
-  let score = captured ? pieceValue(captured) * 10 - pieceValue(moving) : 0;
-  if (move.promote) score += (PROMOTION_BONUS[moving.type] || 80) * 3;
-  return score;
+function movePriority(position, move, preferredMoveKey, context, ply, strategy = null) {
+  const key = moveKey(move);
+  if (key === preferredMoveKey) return 100_000_000;
+
+  let priority = 0;
+  if (move.kind === 'move') {
+    const moving = position.board[move.from];
+    const captured = position.board[move.to];
+    if (captured) priority += pieceValue(captured) * 10 - pieceValue(moving);
+    if (move.promote) priority += 500;
+  } else {
+    priority += (PIECE_VALUES[move.pieceType] || 0) / 20;
+  }
+
+  if (strategy) priority += strategyMoveBonus(position, move, position.turn, strategy) * 10;
+  if (context.config.useKillers && context.killers[ply]?.includes(key)) priority += 30_000;
+  if (context.config.useHistory) priority += context.history.get(key) || 0;
+
+  if (context.config.orderChecks) {
+    const child = applyMove(position, move);
+    if (isInCheck(child, child.turn)) priority += 20_000;
+  }
+  return priority;
 }
 
-function orderMoves(position, moves, preferredMoveKey = null) {
+function orderMoves(position, moves, preferredMoveKey, context, ply, strategy = null) {
   return moves.slice().sort((a, b) => (
-    tacticalScore(position, b, preferredMoveKey) - tacticalScore(position, a, preferredMoveKey)
+    movePriority(position, b, preferredMoveKey, context, ply, strategy)
+      - movePriority(position, a, preferredMoveKey, context, ply, strategy)
   ));
 }
 
-function assertWithinDeadline(deadline) {
-  if (now() >= deadline) throw new Error(TIMEOUT_MESSAGE);
+function touchNode(context) {
+  context.nodes += 1;
+  if (context.nodes >= context.nodeLimit || now() >= context.deadline) {
+    throw new Error(TIMEOUT_MESSAGE);
+  }
 }
 
-function quiescence(position, alpha, beta, perspective, deadline, ply, remainingDepth) {
-  assertWithinDeadline(deadline);
+function terminalScore(position, legalMoves, ply) {
+  if (legalMoves.length > 0) return null;
+  return isInCheck(position, position.turn) ? -MATE_SCORE + ply : 0;
+}
 
+function recordCutoff(context, move, depth, ply) {
+  if (context.config.useHistory) {
+    const key = moveKey(move);
+    context.history.set(key, Math.min(100_000, (context.history.get(key) || 0) + depth * depth));
+  }
+  if (context.config.useKillers && !isCapture(context.currentPosition, move)) {
+    const key = moveKey(move);
+    const killers = context.killers[ply] || [];
+    context.killers[ply] = [key, ...killers.filter((candidate) => candidate !== key)].slice(0, 2);
+  }
+}
+
+function quiescence(position, alpha, beta, context, ply, depth) {
+  touchNode(context);
   const legalMoves = generateLegalMoves(position, position.turn);
-  const terminal = terminalScore(position, perspective, legalMoves, ply);
+  const terminal = terminalScore(position, legalMoves, ply);
   if (terminal !== null) return terminal;
 
-  const maximizing = position.turn === perspective;
   const inCheck = isInCheck(position, position.turn);
-  const standPat = evaluatePosition(position, perspective);
-
-  if (remainingDepth <= 0) return standPat;
-
-  if (maximizing) {
-    if (!inCheck) {
-      if (standPat >= beta) return standPat;
-      alpha = Math.max(alpha, standPat);
-    }
-
-    let value = inCheck ? -Infinity : standPat;
-    const tacticalMoves = inCheck
-      ? legalMoves
-      : legalMoves.filter((move) => isCapture(position, move) || move.promote);
-
-    for (const move of orderMoves(position, tacticalMoves)) {
-      value = Math.max(value, quiescence(
-        applyMove(position, move), alpha, beta, perspective, deadline, ply + 1, remainingDepth - 1,
-      ));
-      alpha = Math.max(alpha, value);
-      if (alpha >= beta) break;
-    }
-    return value;
-  }
+  const standPat = evaluateForTurn(position, context.config);
+  if (depth <= 0) return standPat;
 
   if (!inCheck) {
-    if (standPat <= alpha) return standPat;
-    beta = Math.min(beta, standPat);
+    if (standPat >= beta) return standPat;
+    alpha = Math.max(alpha, standPat);
   }
 
-  let value = inCheck ? Infinity : standPat;
   const tacticalMoves = inCheck
     ? legalMoves
-    : legalMoves.filter((move) => isCapture(position, move) || move.promote);
+    : legalMoves.filter((move) => isCapture(position, move) || (move.kind === 'move' && move.promote));
+  if (tacticalMoves.length === 0) return standPat;
 
-  for (const move of orderMoves(position, tacticalMoves)) {
-    value = Math.min(value, quiescence(
-      applyMove(position, move), alpha, beta, perspective, deadline, ply + 1, remainingDepth - 1,
-    ));
-    beta = Math.min(beta, value);
+  let best = inCheck ? -INF : standPat;
+  const ordered = orderMoves(position, tacticalMoves, null, context, ply);
+  for (const move of ordered) {
+    const score = -quiescence(applyMove(position, move), -beta, -alpha, context, ply + 1, depth - 1);
+    if (score > best) best = score;
+    if (score > alpha) alpha = score;
     if (alpha >= beta) break;
   }
-  return value;
+  return best;
 }
 
-function readTransposition(table, key, depth, alpha, beta) {
-  const entry = table.get(key);
+function readTable(entry, depth, alpha, beta) {
   if (!entry || entry.depth < depth) return null;
-  if (entry.flag === 'exact') return entry.score;
-  if (entry.flag === 'lower' && entry.score >= beta) return entry.score;
-  if (entry.flag === 'upper' && entry.score <= alpha) return entry.score;
+  if (entry.bound === 'exact') return entry.score;
+  if (entry.bound === 'lower' && entry.score >= beta) return entry.score;
+  if (entry.bound === 'upper' && entry.score <= alpha) return entry.score;
   return null;
 }
 
-function minimax(position, depth, alpha, beta, perspective, context, ply) {
-  assertWithinDeadline(context.deadline);
-
+function negamax(position, depth, alpha, beta, context, ply) {
+  touchNode(context);
   const hash = positionHash(position);
-  const cached = readTransposition(context.table, hash, depth, alpha, beta);
+  const entry = context.table.get(hash);
+  const cached = readTable(entry, depth, alpha, beta);
   if (cached !== null) return cached;
 
-  const cachedEntry = context.table.get(hash);
-  const moves = orderMoves(
-    position,
-    generateLegalMoves(position, position.turn),
-    cachedEntry?.bestMoveKey || null,
-  );
-  const terminal = terminalScore(position, perspective, moves, ply);
+  const legalMoves = generateLegalMoves(position, position.turn);
+  const terminal = terminalScore(position, legalMoves, ply);
   if (terminal !== null) return terminal;
   if (depth <= 0) {
-    return context.useQuiescence
-      ? quiescence(position, alpha, beta, perspective, context.deadline, ply, context.quiescenceDepth)
-      : evaluatePosition(position, perspective);
+    return context.config.quiescenceDepth > 0
+      ? quiescence(position, alpha, beta, context, ply, context.config.quiescenceDepth)
+      : evaluateForTurn(position, context.config);
   }
 
   const originalAlpha = alpha;
   const originalBeta = beta;
-  const maximizing = position.turn === perspective;
-  let value = maximizing ? -Infinity : Infinity;
+  let best = -INF;
   let bestMoveKey = null;
+  const ordered = orderMoves(position, legalMoves, entry?.bestMoveKey || null, context, ply);
 
-  for (const move of moves) {
-    const childScore = minimax(
-      applyMove(position, move), depth - 1, alpha, beta, perspective, context, ply + 1,
-    );
-    if ((maximizing && childScore > value) || (!maximizing && childScore < value)) {
-      value = childScore;
+  for (let index = 0; index < ordered.length; index += 1) {
+    const move = ordered[index];
+    const child = applyMove(position, move);
+    let score;
+
+    if (context.config.usePvs && index > 0) {
+      score = -negamax(child, depth - 1, -alpha - 1, -alpha, context, ply + 1);
+      if (score > alpha && score < beta) {
+        score = -negamax(child, depth - 1, -beta, -alpha, context, ply + 1);
+      }
+    } else {
+      score = -negamax(child, depth - 1, -beta, -alpha, context, ply + 1);
+    }
+
+    if (score > best) {
+      best = score;
       bestMoveKey = moveKey(move);
     }
-    if (maximizing) alpha = Math.max(alpha, value);
-    else beta = Math.min(beta, value);
-    if (alpha >= beta) break;
+    if (score > alpha) alpha = score;
+    if (alpha >= beta) {
+      context.currentPosition = position;
+      recordCutoff(context, move, depth, ply);
+      break;
+    }
   }
 
-  let flag = 'exact';
-  if (value <= originalAlpha) flag = 'upper';
-  else if (value >= originalBeta) flag = 'lower';
-  context.table.set(hash, { depth, score: value, flag, bestMoveKey });
-  return value;
+  let bound = 'exact';
+  if (best <= originalAlpha) bound = 'upper';
+  else if (best >= originalBeta) bound = 'lower';
+  context.table.set(hash, { depth, score: best, bound, bestMoveKey });
+  return best;
 }
 
-function scoreRootMove(position, move, depth, player, context) {
-  const child = applyMove(position, move);
-  if (depth <= 1) {
-    return context.useQuiescence
-      ? quiescence(child, -Infinity, Infinity, player, context.deadline, 1, context.quiescenceDepth)
-      : evaluatePosition(child, player);
+function rootSearch(position, depth, alpha, beta, orderedMoves, context, strategy) {
+  const rootEntry = context.table.get(positionHash(position));
+  const moves = orderMoves(
+    position,
+    orderedMoves,
+    rootEntry?.bestMoveKey || null,
+    context,
+    0,
+    strategy,
+  );
+  const scored = [];
+  let bestScore = -INF;
+
+  for (const move of moves) {
+    touchNode(context);
+    const score = -negamax(applyMove(position, move), depth - 1, -beta, -alpha, context, 1);
+    scored.push({ move, score });
+    if (score > bestScore) bestScore = score;
+    if (score > alpha) alpha = score;
   }
-  return minimax(child, depth - 1, -Infinity, Infinity, player, context, 1);
+
+  scored.sort((a, b) => b.score - a.score);
+  context.table.set(positionHash(position), {
+    depth,
+    score: scored[0]?.score ?? -INF,
+    bound: 'exact',
+    bestMoveKey: scored[0] ? moveKey(scored[0].move) : null,
+  });
+  return scored;
 }
 
-function difficultyConfig(difficulty, options) {
-  if (difficulty === 'easy') {
-    return {
-      maxDepth: options.maxDepth ?? 5,
-      timeLimitMs: options.timeLimitMs ?? 1200,
-      useQuiescence: true,
-      quiescenceDepth: options.quiescenceDepth ?? 4,
-      openingTolerance: 320,
-    };
+function searchDepth(position, depth, orderedMoves, context, strategy, previousScore) {
+  const window = context.config.aspirationWindow;
+  if (!window || previousScore === null || Math.abs(previousScore) >= MATE_SCORE - 256) {
+    return rootSearch(position, depth, -INF, INF, orderedMoves, context, strategy);
   }
-  if (difficulty === 'hard') {
-    return {
-      maxDepth: options.maxDepth ?? 7,
-      timeLimitMs: options.timeLimitMs ?? 3500,
-      useQuiescence: true,
-      quiescenceDepth: options.quiescenceDepth ?? 6,
-      openingTolerance: 100,
-    };
+
+  const alpha = previousScore - window;
+  const beta = previousScore + window;
+  const result = rootSearch(position, depth, alpha, beta, orderedMoves, context, strategy);
+  const score = result[0]?.score ?? -INF;
+  if (score <= alpha || score >= beta) {
+    return rootSearch(position, depth, -INF, INF, orderedMoves, context, strategy);
   }
-  return {
-    maxDepth: options.maxDepth ?? 6,
-    timeLimitMs: options.timeLimitMs ?? 2000,
-    useQuiescence: true,
-    quiescenceDepth: options.quiescenceDepth ?? 5,
-    openingTolerance: 180,
-  };
+  return result;
 }
 
 export async function chooseCpuMove(position, difficulty = 'normal', options = {}) {
@@ -266,51 +467,57 @@ export async function chooseCpuMove(position, difficulty = 'normal', options = {
   if (legalMoves.length === 0) return null;
 
   const config = difficultyConfig(difficulty, options);
-  const strategy = options.strategy || null;
-  const opening = findOpeningMove(position, position.turn, strategy, legalMoves);
+  const strategy = config.useOpeningBook ? (options.strategy || null) : null;
+  const opening = config.useOpeningBook
+    ? findOpeningMove(position, position.turn, strategy, legalMoves)
+    : null;
   const context = {
-    deadline: now() + config.timeLimitMs,
+    config,
+    deadline: now() + Math.max(1, config.timeLimitMs),
+    nodeLimit: Math.max(1, config.maxNodes),
+    nodes: 0,
     table: new Map(),
-    useQuiescence: config.useQuiescence,
-    quiescenceDepth: config.quiescenceDepth,
+    history: new Map(),
+    killers: [],
+    currentPosition: position,
   };
 
-  let ordered = orderMoves(position, legalMoves, opening ? moveKey(opening.move) : null);
-  let lastComplete = ordered.map((move) => ({
-    move,
-    score: tacticalScore(position, move),
-    adjustedScore: tacticalScore(position, move) + strategyMoveBonus(position, move, position.turn, strategy),
-  }));
+  let orderedMoves = orderMoves(
+    position,
+    legalMoves,
+    opening ? moveKey(opening.move) : null,
+    context,
+    0,
+    strategy,
+  );
+  let lastComplete = orderedMoves.map((move) => ({ move, score: 0 }));
+  let previousScore = null;
 
-  for (let depth = 1; depth <= config.maxDepth; depth += 1) {
-    const current = [];
+  for (let depth = 1; depth <= Math.max(1, config.maxDepth); depth += 1) {
     try {
-      for (const move of ordered) {
-        const score = scoreRootMove(position, move, depth, position.turn, context);
-        current.push({
-          move,
-          score,
-          adjustedScore: score + strategyMoveBonus(position, move, position.turn, strategy),
-        });
+      const current = searchDepth(position, depth, orderedMoves, context, strategy, previousScore);
+      if (current.length > 0) {
+        lastComplete = current;
+        orderedMoves = current.map((entry) => entry.move);
+        previousScore = current[0].score;
       }
-      current.sort((a, b) => b.adjustedScore - a.adjustedScore);
-      lastComplete = current;
-      ordered = current.map((entry) => entry.move);
     } catch (error) {
-      if (error.message !== TIMEOUT_MESSAGE) throw error;
+      if (error?.message !== TIMEOUT_MESSAGE) throw error;
       break;
     }
+
+    if (Math.abs(previousScore ?? 0) >= MATE_SCORE - 256) break;
     await Promise.resolve();
   }
 
-  const bestRawScore = Math.max(...lastComplete.map((entry) => entry.score));
   if (opening) {
+    const bestScore = lastComplete[0]?.score ?? -INF;
     const openingKey = moveKey(opening.move);
     const openingEntry = lastComplete.find((entry) => moveKey(entry.move) === openingKey);
-    if (openingEntry && openingEntry.score >= bestRawScore - config.openingTolerance) {
+    if (openingEntry && openingEntry.score >= bestScore - config.openingTolerance) {
       return openingEntry.move;
     }
   }
 
-  return lastComplete[0]?.move || ordered[0] || null;
+  return lastComplete[0]?.move || orderedMoves[0] || legalMoves[0];
 }

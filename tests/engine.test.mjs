@@ -12,7 +12,7 @@ import {
   isInCheck,
   moveKey,
 } from '../engine/shogi.js';
-import { chooseCpuMove } from '../engine/cpu.js';
+import { chooseCpuMove, evaluatePosition } from '../engine/cpu.js';
 import { findOpeningMove, openingPlan } from '../engine/opening-book.js';
 
 function emptyPosition(turn = BLACK) {
@@ -81,6 +81,15 @@ test('check can be detected and legal moves must answer it', () => {
   for (const move of moves) assert.equal(isInCheck(applyMove(position, move), BLACK), false);
 });
 
+test('easy evaluation uses AlphaSho material and hand values', () => {
+  const position = emptyPosition();
+  position.board[indexOf(6, 0)] = createPiece('P', BLACK);
+  position.board[indexOf(2, 0)] = createPiece('L', WHITE);
+  position.hands[BLACK].S = 1;
+  assert.equal(evaluatePosition(position, BLACK, 'easy'), 250);
+  assert.equal(evaluatePosition(position, WHITE, 'easy'), -250);
+});
+
 test('all CPU difficulty levels return a legal move', async () => {
   for (const difficulty of ['easy', 'normal', 'hard']) {
     const position = createInitialPosition();
@@ -88,13 +97,13 @@ test('all CPU difficulty levels return a legal move', async () => {
     const move = await chooseCpuMove(position, difficulty, {
       timeLimitMs: 80,
       maxDepth: 3,
+      maxNodes: 2_000,
       quiescenceDepth: 2,
     });
     assert.ok(move, `${difficulty} should return a move`);
     assert.ok(legalKeys.has(moveKey(move)), `${difficulty} should return a legal move`);
   }
 });
-
 
 test('opening book starts each supported strategy with its basic first move', () => {
   const expected = {
@@ -118,12 +127,13 @@ test('opening plans are mirrored correctly for the second player', () => {
   assert.equal(whitePlan[0].to, 80 - blackPlan[0].to);
 });
 
-test('CPU follows a safe selected opening strategy', async () => {
+test('normal CPU follows a safe selected opening strategy', async () => {
   const position = createInitialPosition();
-  const move = await chooseCpuMove(position, 'easy', {
+  const move = await chooseCpuMove(position, 'normal', {
     strategy: 'bogin',
     timeLimitMs: 120,
     maxDepth: 1,
+    maxNodes: 2_000,
     quiescenceDepth: 1,
   });
   assert.equal(moveKey(move), 'm:61:52:0');
