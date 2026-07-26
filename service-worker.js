@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pocket-shogi-v4';
+const CACHE_NAME = 'pocket-shogi-v5';
 const ASSETS = [
   './', './index.html', './style.css', './app.js', './online.js',
   './engine/shogi.js', './engine/cpu.js', './engine/opening-book.js', './engine/dqn-client.js',
